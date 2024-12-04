@@ -6,8 +6,6 @@ from typing import Iterable, List
 from shutil import copyfileobj
 from openai import AsyncOpenAI
 
-from pydub import AudioSegment
-
 import uvicorn
 from langchain.schema import Document
 from contextlib import asynccontextmanager
