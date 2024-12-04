@@ -4,6 +4,9 @@ import aiofiles
 import aiofiles.os
 from typing import Iterable, List
 from shutil import copyfileobj
+from openai import AsyncOpenAI
+
+from pydub import AudioSegment
 
 import uvicorn
 from langchain.schema import Document
@@ -37,6 +40,7 @@ from langchain_community.document_loaders import (
     UnstructuredPowerPointLoader,
 )
 
+import config
 from models import (
     StoreDocument,
     QueryRequestBody,
@@ -70,6 +74,7 @@ from config import (
     # RAG_EMBEDDING_MODEL_DEVICE_TYPE,
     # RAG_TEMPLATE,
     VECTOR_DB_TYPE,
+    OPENAI_API_KEY
 )
 
 
@@ -100,6 +105,19 @@ app.middleware("http")(security_middleware)
 app.state.CHUNK_SIZE = CHUNK_SIZE
 app.state.CHUNK_OVERLAP = CHUNK_OVERLAP
 app.state.PDF_EXTRACT_IMAGES = PDF_EXTRACT_IMAGES
+
+ai_client = AsyncOpenAI(api_key=config.OPENAI_API_KEY)
+supported_audio = {
+    'flac',
+    'mp3',
+    'mp4',
+    'mpeg',
+    'mpga',
+    'm4a',
+    'ogg',
+    'wav',
+    'webm'
+}
 
 
 @app.get("/ids")
@@ -274,6 +292,15 @@ async def store_data_in_vector_db(
         return {"message": "An error occurred while adding documents.", "error": str(e)}
 
 
+async def transcribe_audio(file_path):
+    with open(file_path, "rb") as audio_file:
+        transcript = await ai_client.audio.transcriptions.create(model="whisper-1", file=audio_file)
+    return Document(
+        page_content=transcript.text,
+        metadata={"source": file_path}
+    )
+
+
 def get_loader(filename: str, file_content_type: str, filepath: str):
     file_ext = filename.split(".")[-1].lower()
     known_type = True
@@ -392,10 +419,16 @@ async def embed_file(
         )
 
     try:
-        loader, known_type, file_ext = get_loader(
-            file.filename, file.content_type, temp_file_path
-        )
-        data = loader.load()
+        file_ext = file.filename.split(".")[-1].lower()
+        if file_ext in supported_audio:
+            data = [await transcribe_audio(temp_file_path)]
+            known_type = True
+        else:
+            loader, known_type, file_ext = get_loader(
+                file.filename, file.content_type, temp_file_path
+            )
+            data = loader.load()
+        print(data)
         result = await store_data_in_vector_db(
             data=data, file_id=file_id, user_id=user_id, clean_content=file_ext == "pdf"
         )
@@ -418,6 +451,7 @@ async def embed_file(
                     detail="An unspecified error occurred.",
                 )
     except Exception as e:
+        print(str(e))
         response_status = False
         response_message = f"Error during file processing: {str(e)}"
         raise HTTPException(
